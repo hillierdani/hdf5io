@@ -2,7 +2,7 @@
 The hdf5io module is a class that should be inherited. It provides methods to automatically save, load data from a hdf5 file 
 and recreate derived data types.
 '''
-import sys, traceback, pdb
+import sys, pdb
 import pickle
 try:
     import queue
@@ -11,28 +11,18 @@ except:
 import zc.lockfile
 import numpy
 import re
-import visexpa.engine.misc.introspect as introspect
-from visexpa.engine.misc.introspect import full_exc_info
-from visexpa.engine.misc.stringop import split, join, coerce_if_string23, is_decodable_to_str
-from visexpa.engine.dataprocessors.generic import check_before_long_calculation
+import introspect
+from stringop import split, join, coerce_if_string23, is_decodable_to_str
 import os
 import numbers
-from subprocess import *
 import tables
 import time
 import traceback
-try:
-    import PyQt4.QtCore as QtCore
-except ImportError:
-    import PyQt5.QtCore as QtCore
 import logging
-import shutil
 import threading
 from contextlib import contextmanager, closing
 log = logging.getLogger('hdf5io')
 import warnings
-import pytest
-import tempfile
 warnings.filterwarnings('ignore',category=tables.NaturalNameWarning)
 try: 
     import psutil    
@@ -107,7 +97,7 @@ if not hasattr(sys.modules[__name__], 'lockman'): #module might be imported mult
     lockman = GlobalThreadLocks()
     lockman.start()
 
-filters = tables.Filters(complevel=1, complib='blosc:lz4', shuffle=1)  # run benchmark in legacy.compressor_benchmark to find best compressor. This setting is fast decoding and similar file size as LZO. Fast decoding is critical since aggregation/comparer reads a lot into hdf5 files.
+filters = tables.Filters(complevel=1, complib='blosc:lz4', shuffle=True)  # run benchmark in legacy.compressor_benchmark to find best compressor. This setting is fast decoding and similar file size as LZO. Fast decoding is critical since aggregation/comparer reads a lot into hdf5 files.
 class Hdf5io(object):
     ''' 
     Handles data between RAM and hdf5 file. 
@@ -126,20 +116,14 @@ The create_ functions should not expect any parameters but have to access data f
         else:
             raise AttributeError('Hdf5io cannot load or recreate {0} in file {1}'.format(item, self.filename))
 
-    def __init__(self,filename, config=None, name = None, file_always_open=True,  filelocking=(os.name!='nt'), file_mode = 'a'):
+    def __init__(self, filename, lockfile_path=None, file_always_open=True, file_mode = 'a'):
         '''
         Opens/creates the hdf5 file for reading/writing.
         '''
-        if config is None and filelocking == True:
-            raise RuntimeError('You cannot open a hdf5 file with locking enabled without providing a config object')
+        self.lockfile_path = lockfile_path
         if not hasattr(self, 'attrnames'):
             self.attrnames = []
-        if not config is None and hasattr(config,'ramlimit'):
-            self.ramlimit = min(RAMLIMIT,config.ramlimit)
-        else:
-            self.ramlimit = RAMLIMIT
-        self.config = config
-        self.filelocking=filelocking
+        self.ramlimit = RAMLIMIT
         self.file_always_open = file_always_open
         self.pixellist = [] # there is one big data attribute handled by the class. In case of a series of 2D images, data is stored in chunks along pixels
         if hasattr(filename,'shape') and filename.shape==(1,):
@@ -163,7 +147,7 @@ The create_ functions should not expect any parameters but have to access data f
                 log.error(self.filename + "corrupted?")
                 os.rename(self.filename, self.filename+'corrupted')
                 raise RuntimeError(self.filename+' corrupted?')
-        self.filelockkey = self.filename.replace('/', '\\') #introspect.ReadWriteLock() # this is different from file-based locking, that does not exclude multiple threads access the same open file and cause problems
+        self.filelockkey = self.filename.replace('/', '\\')
         lockman.create(self.filelockkey, GlobalLock())
         self.lockdebug = False
         self.blocking_lock = True
@@ -175,9 +159,6 @@ The create_ functions should not expect any parameters but have to access data f
         if hasattr(self.h5f.root._v_attrs,'soma_rois_version') and 'caiman' in self.h5f.root._v_attrs.soma_rois_version:
             pass #raise NotImplementedError('Which axis is time after caiman conversion?') #else 3
         self.rawdatasource = join(self.h5fpath,'rawdata') #in memory, alternative is 'h5f.root' for disk mapped access
- #       self.rawdatasource = 'self.h5f.root.rawdata'
-        if introspect.traverse(self, self.rawdatasource) is not None and self.attrsize('rawdata') <= self.ramlimit: #not too big to fit in memory:
-            self.rawdatasource = 'rawdata' #will load to memory
         self._want_abort = 0
         log.debug('Opening '+self.filename)
 #        super(Hdf5io,self).__getattr__ = self.file_aware_getattr
@@ -197,10 +178,10 @@ The create_ functions should not expect any parameters but have to access data f
     def open_with_lock(self, filemode='a'):
         with lockman.lockpool[self.filelockkey].acquire(False):
             try:
-                if self.filelocking:
-                    if not os.path.exists(os.path.join(self.config.temppath, 'filelocks')):
-                        os.makedirs(os.path.join(self.config.temppath, 'filelocks'))
-                    hdf5filelock_filename = os.path.join(os.path.join(self.config.temppath, 'filelocks', os.path.split(self.filename)[1][:-3]+'.lock'))
+                if self.lockfile_path:
+                    if not os.path.exists(os.path.join(self.lockfile_path, 'filelocks')):
+                        os.makedirs(os.path.join(self.lockfile_path, 'filelocks'))
+                    hdf5filelock_filename = os.path.join(os.path.join(self.lockfile_path, 'filelocks', os.path.split(self.filename)[1][:-3]+'.lock'))
                     self.hdf5file_lock = zc.lockfile.LockFile(hdf5filelock_filename) # cross platform file lock, but puts an extra lock file in the file system
                 try:
                     self.h5f = tables.open_file(self.filename, mode = filemode)
@@ -213,7 +194,7 @@ The create_ functions should not expect any parameters but have to access data f
                  #   versions = [tables.which_lib_version(item) for item in carray_complib if item is not None]
                   #  if 0 and None in versions: # not in use but kept as a way to check complib versions
                    #     self.h5f.close()
-                    #    if self.filelocking:self.hdf5file_lock.close()
+                    #    if self.lockfile_path:self.hdf5file_lock.close()
                      #   raise RuntimeError('Compression library used for creating a CArray in this file is not available in the pytables installation on this computer')
             except zc.lockfile.LockError:
                 with open(hdf5filelock_filename, 'r') as lockf:
@@ -222,28 +203,25 @@ The create_ functions should not expect any parameters but have to access data f
                 raise RuntimeError(str(os.getpid())+" cannot lock file "+self.filename+" that is currently locked by pid "+ pidinlock)
             except:
                 traceback.print_exc()
-                #pdb.post_mortem(full_exc_info()[2])
-#                import pdb
-#                pdb.set_trace()
                 raise RuntimeError(f"File {self.filename} cannot be opened, giving up.")
             finally:
                 if hasattr(self, 'h5f') and self.h5f.isopen and not self.file_always_open:
                     self.h5f.close()
-                if hasattr(self, 'hdf5file_lock') and self.filelocking:self.hdf5file_lock.close()
+                if hasattr(self, 'hdf5file_lock') and self.lockfile_path: self.hdf5file_lock.close()
             
     
     def copy_file(self, newname, overwrite=False):
         '''copy, when file exists it will not overwrite'''
         if not overwrite and os.path.exists(newname):
             raise IOError('Destination hdf file exists and overwrite is set to False')
-        newh = Hdf5io(newname,  self.config, filelocking=self.filelocking) #opens with locking
+        newh = Hdf5io(newname, lockfile_path=self.lockfile_path) #opens with locking
         newh.h5f.close() #closes hdf5 file but does not release the lock
         self.h5f.copy_file(newname, overwrite=True) # this operation does not check the lock but 
         #we have it so, no problem. Set overwrite to true since we just created the destination hdf file to make sur#release the lock for the new file
 
     @property
     def timestamp(self):
-        from visexpa.engine.datahandlers.datatypes import timestamp_re
+        from .stringop import timestamp_re
         return int(timestamp_re.findall(self.filename)[0])
 
     @property
@@ -261,7 +239,7 @@ The create_ functions should not expect any parameters but have to access data f
                     closeit = False
                 if self.h5f.isopen and self.h5f.mode!='a':
                     self.h5f.close()
-                    if self.filelocking: self.hdf5file_lock.close()
+                    if self.lockfile_path: self.hdf5file_lock.close()
                     self.open_with_lock('a')
                     print(('write opened '+self.filename))
                     reopen = True
@@ -270,12 +248,11 @@ The create_ functions should not expect any parameters but have to access data f
                 yield
             except:
                 raise
-                #pdb.post_mortem(full_exc_info()[2])
-            finally: 
+            finally:
                 if closeit or reopen: 
                     print(('hdf5io write context closes file'+self.filename))
                     self.h5f.close()
-                    if self.filelocking: self.hdf5file_lock.close()
+                    if self.lockfile_path: self.hdf5file_lock.close()
                 if reopen: 
                     self.open_with_lock('a')
                     print(('write reopened '+self.filename))
@@ -298,13 +275,12 @@ The create_ functions should not expect any parameters but have to access data f
                 yield
             except:
                 traceback.print_exc()
-                #pdb.post_mortem(full_exc_info()[2])
                 raise
             finally: 
                 if closeit: 
                     print('hdf5io read closes file')
                     self.h5f.close()
-                    if self.filelocking: self.hdf5file_lock.close()
+                    if self.lockfile_path: self.hdf5file_lock.close()
         
 #    def __del__(self): #do not use: it is allowed to open the same file in multiple threads, locking ensures this is safe
    #     self.close()
@@ -367,8 +343,6 @@ The create_ functions should not expect any parameters but have to access data f
                            # dir(self)
                         except: 
                             traceback.print_exc()
-                            #pdb.post_mortem(full_exc_info()[2])
-                            #raise
                 else:
                     log.debug(errormsg+';'+vname+' not found in memory or in the hdf5 file')
                     mynode = None
@@ -419,8 +393,6 @@ The create_ functions should not expect any parameters but have to access data f
                     else:
                         raise tables.exceptions.NoSuchNodeError('The specified path {} under which variables {} need to be saved does not exist. Specify the keyword argument "createparents" as True to automatically create the node specified in the path'.format((path), (names)))
                 for vname in names:
-                    if QtCore.QCoreApplication.instance() is not None:
-                        QtCore.QCoreApplication.processEvents()
                     hasit = self.find_variable_in_h5f(vname, path=path)
                     if hasit is None:
                         pass
@@ -517,8 +489,6 @@ The create_ functions should not expect any parameters but have to access data f
                 raise NotImplementedError('Saving list of lists is supported till '+str(10**Hdf5io.maxelem)+' elements, increase x in the expression {0:0x} below and make sure old files will be read')
             root = self.h5f.create_group(hp, vn, vn+'_list_of_lists')
             for i in range(len(vp)):
-                if QtCore.QCoreApplication.instance() is not None:
-                    QtCore.QCoreApplication.processEvents()
                 self.list2hdf(vp[i],Hdf5io.elemformatstr.format(i),root,filters,overwrite)
             if 0: # list type already detects if list of lsit is arrayizable so this below is deprected
                list_type = introspect.list_type(vp[0])
@@ -566,7 +536,7 @@ The create_ functions should not expect any parameters but have to access data f
                 try:
                     atom = tables.Atom.from_dtype(vdtype)
                 except:
-                    pass
+                    raise RuntimeError('Cannot determine pytables atom from numpy data dtype.')
                 cvp = getattr(vp.view(numpy.recarray), fn)
                 vs = cvp.shape
                 self.saveCArray(cvp, vs, atom, root, fn, overwrite, filters)
@@ -585,8 +555,6 @@ The create_ functions should not expect any parameters but have to access data f
             self.h5f.remove_node(hp, gn, recursive=True)
         root = self.h5f.create_group(hp, gn, str(gn)+'_dict')
         for fn in fnames:
-            if QtCore.QCoreApplication.instance() is not None:
-                QtCore.QCoreApplication.processEvents()
             if vp[fn] is None:
                 vp[fn] = []
             if hasattr(vp[fn], 'keys'): 
@@ -912,44 +880,22 @@ The create_ functions should not expect any parameters but have to access data f
             return numpy.cumprod(obj.shape)[-1] * obj.atom.dtype.itemsize
         else:
             return obj.size*obj.dtype.itemsize
-            
-            
-    def check_hashes(self,vname,function,*args,**kwargs):
-        '''Checks whether the function code and argument hashes exist in the hdf5 file and updates them if necessary'''
-        fh=self.findvar(vname+'_function_hash', path='/hashes')
-        ah=self.findvar(vname+'_function_arguments_hash', path='/hashes')
-        new_fh, new_ah = check_before_long_calculation(fh, function, ah,*args,**kwargs)
-        if new_fh is None: # argument and function hashes are the same, no need to recalculate
-            self.load(vname)
-            return True
-        else:
-            with self.write:
-                if not hasattr(self.h5f.root, 'hashes'):
-                    self.h5f.root.hashes = self.h5f.create_group('/', 'hashes', 'Hash sums stored to check if data needs to be recreated')
-                setattr(self, vname+'_function_hash',new_fh)
-                setattr(self,vname+'_function_arguments_hash', numpy.array(new_ah))
-                self.save([vname+'_function_hash',vname+'_function_arguments_hash'], overwrite=True, path='h5f.root.hashes')
-            return False
 
-def read_item(file1,  attrname,  config=None,  filelocking=True, file_mode = 'r'):
+def read_item(file1,  attrname, lockfile_path=None, file_mode = 'r'):
     '''Opens the hdf5file, reads the attribute and closes the file'''
-    if config is None and filelocking == True:
-        raise RuntimeError('You cannot open a hdf5 file with locking enabled without providing a config object')
     if hasattr(file1,'findvar'):
         h5f = file1
         value = h5f.findvar(attrname)
     else:
         if not os.path.exists(file1):
             raise OSError('Hdf5file '+file1+' not found')
-        with closing(Hdf5io(file1, config, filelocking=filelocking, file_mode=file_mode)) as h5f:
+        with closing(Hdf5io(file1, lockfile_path=lockfile_path, file_mode=file_mode)) as h5f:
             value = h5f.findvar(attrname)
     return value
     
-def save_item(filename,  varname,  var, config=None, overwrite = False, filelocking=True):
-    if config is None and filelocking == True:
-        raise RuntimeError('You cannot open a hdf5 file with locking enabled without providing a config object')
+def save_item(filename,  varname,  var, lockfile_path=None, overwrite = False):
     try:
-        h = Hdf5io(filename, config, filelocking=filelocking)
+        h = Hdf5io(filename,lockfile_path=lockfile_path)
         setattr(h,  varname,  var)
         h.save(varname,  overwrite = overwrite)
     except:
@@ -957,55 +903,3 @@ def save_item(filename,  varname,  var, config=None, overwrite = False, filelock
     finally:
         h.close()
 
-def _iopen(filename, cfg, packagepath=None, file_always_open=True, filelocking = True, file_mode = 'a'):
-    '''Intelligent open function: given a filename first find out the classname that is used to process the data
-    then open the file via that class so that appropriate processing functions will be available.'''
-    if filename.find('hdf5') < len(filename)-4 and not cfg is None:
-        # not hdf5 extension, try to guess if guessing code is available
-        try:
-            basedir, dummy = os.path.split(filename)
-            import visexpa.engine.component_guesser as component_guesser
-            filename = component_guesser.rawname2cachedname(filename, cfg.basepath, cfg.basepath, cfg.rawext, cfg.cacheext)
-        except Exception as e:
-            log.exception('Could not guess hdf5 filename, unknown rawdata format?')
-    if packagepath is None and hasattr(cfg, 'packagepath'):
-        packagepath=cfg.packagepath
-    classname = read_item(filename, 'exptype', cfg, filelocking = filelocking, file_mode = file_mode)
-    if classname is None: #MES hdf5 not yet converted?
-        import visexpa.engine.datahandlers.importers as importers
-        obj = importers.MESExtractor(filename, cfg, filelocking = filelocking)
-        data_class, stim_class,classname,timestamp = obj.parse()
-        #classname = read_item(filename, 'exptype')
-    import visexpman.engine.generic.utils
-    if classname is None or packagepath is None:  #revert back to plain hdf5, processing functions expected from inherited analysis class will likely fail
-        # warnings.warn('iopen could not determine analysis class for {0}'.format(self.filename))
-        return Hdf5io(filename,cfg, file_mode=file_mode)
-    anal_class=visexpman.engine.generic.utils.fetch_classes(packagepath, classname=classname) # find the required class
-    components = {'hdf5_filename':filename}
-    if len(anal_class)==0:
-        handler = Hdf5io(filename,cfg, file_mode=file_mode)
-    else:
-        handler = anal_class[0][1](components, cfg, file_always_open=file_always_open, filelocking=filelocking, file_mode=file_mode) #open file and return reference
-    return handler
-
-class iopen(object):
-    """
-    Opens a hdf5 file after guessing the Analysis class that can interpret stimulation block structure.
-    """
-    def __init__(self, filename, cfg, packagepath=None, file_always_open=True, filelocking = True, file_mode = 'a'):
-        self.handler = _iopen(filename, cfg, packagepath, file_always_open, filelocking, file_mode)
-
-    def __enter__(self):
-        return self.handler
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.handler.close()
-        return False
-
-
-if __name__=='__main__':
-    test_load_stimpar()
-    unittest.main()
-
-
-  
