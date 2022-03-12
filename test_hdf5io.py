@@ -1,6 +1,6 @@
 import pytest
 from contextlib import closing
-from .hdf5io import Hdf5io
+from .hdf5io import Hdf5io, read_item
 import numpy
 import tempfile
 import sys
@@ -24,6 +24,21 @@ def temp_hdf_handler():
     os.remove(fp)
     if not os.listdir(path):
         os.rmdir(path)
+
+def test_locking(temp_hdf_handler):
+    """
+    Tests if a locked file can be opened while being open via the test fixture hdf handler.
+    """
+    temp_hdf_handler.save('filename')
+    with Hdf5io(temp_hdf_handler.filename, lockfile_path=temp_hdf_handler.lockfile_path) as handler:
+        handler.dummy='test'
+        handler.save('dummy')
+    temp_hdf_handler.close()
+    #with pytest.raises(PermissionError) as e_info:
+    read_item(temp_hdf_handler.filename, 'filename', lockfile_path=temp_hdf_handler.lockfile_path)
+    assert True
+    # all these pass as there is no real concurrency happening
+    # TODO: multithreaded read/write in a loop that provokes a race condition
 
 def test_saveload_pickled(temp_hdf_handler):
     """
@@ -54,13 +69,13 @@ def test_masked_array(temp_hdf_handler):
     for k1 in madict1:
         numpy.testing.assert_array_almost_equal(madict[k1], madict1[k1])
 
-def test_dict2hdf():
+def test_dict2hdf(temp_hdf_handler):
     import copy
     from .introspect import dict_isequal
     data = {'a': 10, 'b': 5 * [3]}
     data = 4 * [data]
     data2 = {'a': numpy.array(10), 'b': numpy.array(5 * [3])}
-    h = Hdf5io(filename, filelocking=False)
+    h = temp_hdf_handler
     h.data = copy.deepcopy(data)
     h.data2 = copy.deepcopy(data2)
     h.save(['data', 'data2'])
@@ -68,50 +83,38 @@ def test_dict2hdf():
     h.load(['data', 'data2'])
     h.close()
     # hdf5io implicitly converts list to ndarray
-    assertTrue(dict_isequal(data2, h.data2) and data == h.data)
+    assert (dict_isequal(data2, h.data2) and data == h.data)
 
-def test_recarray2hdf():
+def test_recarray2hdf(temp_hdf_handler):
     import copy
     data = numpy.array(list(zip(list(range(10)), list(range(10)))),
                        dtype={'names': ['a', 'b'], 'formats': [numpy.int, numpy.int]})
     data = 4 * [data]
-    h = Hdf5io(filename, filelocking=False)
-    h.data = copy.deepcopy(data)
-    h.save(['data'])
-    del h.data
-    h.load(['data'])
-    h.close()
-    assertTrue((numpy.array(data) == numpy.array(h.data)).all())
+    temp_hdf_handler.data = copy.deepcopy(data)
+    temp_hdf_handler.save(['data'])
+    del temp_hdf_handler.data
+    temp_hdf_handler.load(['data'])
+    temp_hdf_handler.close()
+    numpy.testing.assert_array_equal(numpy.array(data), numpy.array(temp_hdf_handler.data))
 
-def test_findvar():
-    f = os.path.join(unit_test_runner.TEST_reference_data_folder,
-                     'fragment_-373.7_-0.8_-160.0_MovingDot_1331897433_3.hdf5')
-    h5f = Hdf5io(f, filelocking=False)
-    h5f.findvar('MovingDot_1331897433_3')
-    res = h5f.findvar(['position', 'machine_config'])
-    pass
-
-def test_complex_data_structure():
+def test_complex_data_structure(temp_hdf_handler):
     item = {}
     item['a1'] = 'a1'
     item['a2'] = 2
     item['a3'] = 5
     items = 5 * [item]
-    f = filename
-    h5f = Hdf5io(f, filelocking=False)
-    h5f.items = items
-    h5f.save('items', verify=True)
-    h5f.close()
-    reread = read_item(f, 'items', filelocking=False)
-    assertEqual(items, reread)
+    temp_hdf_handler.items = items
+    temp_hdf_handler.save('items', verify=True)
+    temp_hdf_handler.close()
+    reread = read_item(temp_hdf_handler.filename, 'items')
+    assert items==reread
 
 
-def test_listoflists():
+def test_listoflists(temp_hdf_handler):
     items = [['1.1', '1.2', '1.3'], ['2.1', '2.2']]
-    f = filename
-    h5f = Hdf5io(f, filelocking=False)
+    h5f = temp_hdf_handler
     h5f.items = items
     h5f.save('items')
     h5f.close()
-    assertEqual(items, read_item(f, 'items'), filelocking=False)
+    assert items == read_item(h5f.filename, 'items', lockfile_path=h5f.lockfile_path)
 

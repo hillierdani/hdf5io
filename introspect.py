@@ -39,59 +39,12 @@ def hash_variables(variables, digest = None):
         for v in variables:
             myhash.update(pickle.dumps(v))
         return myhash.digest() if digest is None else myhash.hexdigest()
-        
-def kill_child_processes(parent_pid, sig='SIGTERM'):
-        ps_command = subprocess.Popen("ps -o pid --ppid %d --noheaders" % parent_pid, shell=True, stdout=subprocess.PIPE)
-        ps_output = ps_command.stdout.read()
-        retcode = ps_command.wait()
-        assert retcode == 0, "ps command returned %d" % retcode
-        for pid_str in ps_output.split("\n")[:-1]:
-            try:
-                os.kill(int(pid_str), getattr(signal, sig))
-            except:
-                pass
-
-class FauxTb(object):
-    def __init__(self, tb_frame, tb_lineno, tb_next):
-        self.tb_frame = tb_frame
-        self.tb_lineno = tb_lineno
-        self.tb_next = tb_next
-
-
-def extend_traceback(tb, stack):
-    """Extend traceback with stack info."""
-    head = tb
-    for tb_frame, tb_lineno in stack:
-        head = FauxTb(tb_frame, tb_lineno, head)
-    return head
-
-def full_exc_info():
-    """Like sys.exc_info, but includes the full traceback."""
-    t, v, tb = sys.exc_info()
-    full_tb = extend_traceback(tb, current_stack(1))
-    return t, v, full_tb
 
 def nameless_dummy_object_with_methods(*methods):
     d = {}
     for sym in methods:
         d[sym] = lambda self,*args,**kwargs: None
     return type("",(object,),d)()
-    
-def flatten(l, ltypes=(list, tuple)):
-    #consider using itertools.chain(*mylist)
-    ltype = type(l)
-    l = list(l)
-    i = 0
-    while i < len(l):
-        while isinstance(l[i], ltypes):
-            if not l[i]:
-                l.pop(i)
-                i -= 1
-                break
-            else:
-                l[i:i + 1] = l[i]
-        i += 1
-    return ltype(l)
 
 def list_of_empty_mutables(n, prototype=list()):
     return [copy.deepcopy(prototype) for _ in range(n)]
@@ -108,16 +61,6 @@ def traverse(obj,  attrchain):
             return None
         obj = getattr(obj, a)
     return obj
-
-def index(seq, f):
-    """Return the index of the first item in seq where f(item) == True.
-    Example: check if Intrinsic can be found in a list of strings:
-    if Helpers.index(zlist, lambda text: text.find('Intrinsic')):
-        return 'Intrinsic'
-    else:
-        return 'Calcium'
-    """
-    return next((i for i in range(len(seq)) if f(seq[i])), None)
 
 class Timer(object):
     '''Simple measurement utility, use as:

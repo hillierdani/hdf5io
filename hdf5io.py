@@ -70,7 +70,7 @@ class GlobalLock(object):
         self.lock=threading.RLock()
         
     @contextmanager
-    def acquire(self, block,timeout=60000): # 1 min timeout
+    def acquire(self, block, timeout=60000): # 1 min timeout
         if block == False or timeout == 0:  # either lock should not block at all, or block with infinite waiting time
             if self.lock.acquire(block) == False:
                 print('already locked, check who with traceback package')
@@ -203,6 +203,7 @@ The create_ functions should not expect any parameters but have to access data f
                 raise RuntimeError(str(os.getpid())+" cannot lock file "+self.filename+" that is currently locked by pid "+ pidinlock)
             except:
                 traceback.print_exc()
+                pdb.set_trace()
                 raise RuntimeError(f"File {self.filename} cannot be opened, giving up.")
             finally:
                 if hasattr(self, 'h5f') and self.h5f.isopen and not self.file_always_open:
@@ -843,9 +844,10 @@ The create_ functions should not expect any parameters but have to access data f
                 if 'inhomogenous' in n._v_title:
                     mylist[int(n._v_name)] = pickle.loads(mylist[int(n._v_name)])
                 if 'arrayized' in n._v_title:
-                    mylist[int(n._v_name)] = mylist[int(n._v_name)].tolist()
                     if '+string' in n._v_title:
-                        pdb.set_trace()  # p3 convert back to strings via str()
+                        mylist[int(n._v_name)] = numpy.char.decode(mylist[int(n._v_name)]).tolist()
+                    else:
+                        mylist[int(n._v_name)] = mylist[int(n._v_name)].tolist()
         return mylist
                             
     def step_into_hdfgroup(self, group):
