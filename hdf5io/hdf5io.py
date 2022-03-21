@@ -11,8 +11,8 @@ except:
 import zc.lockfile
 import numpy
 import re
-import introspect
-from stringop import split, join, coerce_if_string23, is_decodable_to_str
+import hdf5io.introspect as introspect
+from .stringop import join, coerce_if_string23, is_decodable_to_str
 import os
 import numbers
 import tables
@@ -30,7 +30,9 @@ try:
 except:
     RAMLIMIT = 2*10**9 #2Gb
     pass
-    
+import tempfile
+lockfilepath = tempfile.gettempdir()
+
 class GlobalThreadLocks(threading.Thread):
     '''Class that keeps a global dict of lock objects. Locks have to be created with the create method since dict is not thread safe
     so we mush ensure there are no concurrent write operations to the lock dict. Once there is an entry with a lock it can safely be read
@@ -116,7 +118,7 @@ The create_ functions should not expect any parameters but have to access data f
         else:
             raise AttributeError('Hdf5io cannot load or recreate {0} in file {1}'.format(item, self.filename))
 
-    def __init__(self, filename, lockfile_path=None, file_always_open=True, file_mode = 'a'):
+    def __init__(self, filename, lockfile_path=lockfilepath, file_always_open=True, file_mode = 'a'):
         '''
         Opens/creates the hdf5 file for reading/writing.
         '''
@@ -125,7 +127,7 @@ The create_ functions should not expect any parameters but have to access data f
             self.attrnames = []
         self.ramlimit = RAMLIMIT
         self.file_always_open = file_always_open
-        self.pixellist = [] # there is one big data attribute handled by the class. In case of a series of 2D images, data is stored in chunks along pixels
+        filename = str(filename)  # not handling pathlib.Path objects (yet)
         if hasattr(filename,'shape') and filename.shape==(1,):
             filename = filename[0]
         if not filename[-4:] == 'hdf5':
@@ -463,9 +465,9 @@ The create_ functions should not expect any parameters but have to access data f
             self.h5f.create_array(hp, vn, 'empty list', "empty list")
             return
         list_type = introspect.list_type(vp)
-        if list_type is 'list_of_arrays':
+        if list_type == 'list_of_arrays':
             self.save_vlarray(hp, vn, vp, filters=filters)
-        elif list_type is 'arrayized':
+        elif list_type == 'arrayized':
             vpa = numpy.array(vp)
             try:
                 typepost = 'arrayized'
@@ -485,7 +487,7 @@ The create_ functions should not expect any parameters but have to access data f
                     self.saveCArray(numpyarray, numpyarray.shape, tables.Atom.from_dtype(vp[0][fname].dtype), root, fname, overwrite, filters, typepost='_'+list_type, chunkshape=chunkshape)
                 else: # each recarray in the list has different numbe of elements
                     self.save_vlarray(root, fname, [v[fname] for v in vp],filters=filters )
-        elif list_type is 'list_of_lists':
+        elif list_type == 'list_of_lists':
             if len(vp)>10**Hdf5io.maxelem:
                 raise NotImplementedError('Saving list of lists is supported till '+str(10**Hdf5io.maxelem)+' elements, increase x in the expression {0:0x} below and make sure old files will be read')
             root = self.h5f.create_group(hp, vn, vn+'_list_of_lists')
@@ -493,7 +495,7 @@ The create_ functions should not expect any parameters but have to access data f
                 self.list2hdf(vp[i],Hdf5io.elemformatstr.format(i),root,filters,overwrite)
             if 0: # list type already detects if list of lsit is arrayizable so this below is deprected
                list_type = introspect.list_type(vp[0])
-               if list_type is 'list_of_arrays': # list of lists of arrays
+               if list_type == 'list_of_arrays': # list of lists of arrays
                     vlarray = self.h5f.create_vlarray(hp, vn,
                                                      tables.Atom.from_dtype(vp[0][0].dtype),#(shape=()),
                                                      vn,
@@ -507,13 +509,13 @@ The create_ functions should not expect any parameters but have to access data f
                             raise NotImplementedError('Saving list of lists of arrays when arrays have different shape is not implemented')
                         vlarray.append(conc_item)
                     setattr(self._v_attrs,vn+'_listlength',len(vp[0]))
-        elif list_type is 'list_of_dicts': # list of dicts, all elements of the list must be a dict
+        elif list_type == 'list_of_dicts': # list of dicts, all elements of the list must be a dict
             if len(vp)>10**Hdf5io.maxelem:
                 raise NotImplementedError('Saving list of dicts is supported till '+str(10**Hdf5io.maxelem)+' elements, increase x in the expression {0:0x} below and make sure old files will be read')
             root = self.h5f.create_group(hp, vn, vn+'_list_of_dicts')
             for i0 in range(len(vp)):
                 self.dict2hdf(vp[i0], Hdf5io.elemformatstr.format(i0),root, filters,  overwrite)
-        elif list_type is 'inhomogenous_list':  # TODO: could use bloscpack directly? Estimate pickle performance depdneing on datadepth and size
+        elif list_type == 'inhomogenous_list':  # TODO: could use bloscpack directly? Estimate pickle performance depdneing on datadepth and size
             datastream = numpy.array(pickle.dumps(vp))
             self.ndarray2hdf(datastream, vn+'inhomogenous_list', hp)
                 
@@ -566,7 +568,7 @@ The create_ functions should not expect any parameters but have to access data f
                 if isinstance(fn, numpy.ndarray) and sum(fn.shape)==0 or isinstance(fn, Number):
                     typepost = '__Number'
                 else:
-                    raise TypeError('Dict key with this type cannot be saved into hdf5 hierarchy')
+                    raise TypeError(f'Dict key {fn} with this type cannot be saved into hdf5 hierarchy')
             else:
                 typepost=''
             if introspect.list_type(vp[fn]) is not None:
@@ -694,7 +696,7 @@ The create_ functions should not expect any parameters but have to access data f
         try:
             if path is None:
                 path = self.h5fpath
-            croot = introspect.traverse(self,path)
+            croot = introspect.traverse(self, path)
             hasit = self.find_variable_in_h5f(vn,path=path)
             if len(hasit)>0:
                 for vname in hasit:

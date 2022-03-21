@@ -1,10 +1,6 @@
 import pytest
-from contextlib import closing
 from .hdf5io import Hdf5io, read_item
 import numpy
-import tempfile
-import sys
-
 
 @pytest.fixture()
 def temp_hdf_handler():
