@@ -136,7 +136,7 @@ The create_ functions should not expect any parameters but have to access data f
         cp, cf = os.path.split(self.filename)
         if not os.path.exists(cp):
             os.makedirs(cp)
-        if os.path.exists(self.filename):
+        if 0: #os.path.exists(self.filename):
             try:
                 import h5py
                 openerror = not h5py.is_hdf5(self.filename)
