@@ -717,7 +717,7 @@ The create_ functions should not expect any parameters but have to access data f
                         setattr(self, vname, myarray) # load array  from hdf5 file
                         title = self.h5f.get_node(croot, vname)._v_title
                         if '__String' in title or '__Bytes' in title:  # probably a long cPickle serialized string was stored in a 1-length VLArray, remove placeholder dimension
-                            setattr(self, vname, getattr(self, vname)[0].tostring())
+                            setattr(self, vname, getattr(self, vname)[0].tobytes())
                         if 'inhomogenous' in title:
                             setattr(self, vname, pickle.loads(getattr(self, vname)))
                         if 'arrayized' in title:

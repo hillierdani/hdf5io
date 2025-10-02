@@ -84,7 +84,7 @@ def test_dict2hdf(temp_hdf_handler):
 def test_recarray2hdf(temp_hdf_handler):
     import copy
     data = numpy.array(list(zip(list(range(10)), list(range(10)))),
-                       dtype={'names': ['a', 'b'], 'formats': [numpy.int, numpy.int]})
+                       dtype={'names': ['a', 'b'], 'formats': [int, int]})
     data = 4 * [data]
     temp_hdf_handler.data = copy.deepcopy(data)
     temp_hdf_handler.save(['data'])
