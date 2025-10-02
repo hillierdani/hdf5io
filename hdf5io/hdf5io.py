@@ -591,7 +591,7 @@ The create_ functions should not expect any parameters but have to access data f
         fn is the name of the new node in the pytables file.'''
         if sum(vs)==0 or vp.size == 0: #0 dim array
             vla = self.h5f.create_vlarray(root, fn, atom, fn+typepost, filters=filters)
-            if not hasattr(vp,'data') or len(vp.data)==0: #empty array, create placeholder in h5f file
+            if not hasattr(vp,'data') or vp.size==0: #empty array, create placeholder in h5f file
                 return
             else:
                 vla.append([vp])
